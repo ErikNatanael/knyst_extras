@@ -1,0 +1,12 @@
+[package]
+name = "knyst_bela"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+# knyst = { git = "https://github.com/ErikNatanael/knyst.git", default-features = false }
+knyst = { path = "/home/erik/code/rust/audio/knyst/knyst", default-features = false }
+libc = "0.2.147"
+thiserror = "1.0.50"

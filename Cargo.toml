@@ -1,0 +1,9 @@
+[workspace]
+members = [
+  "knyst_reverb",
+  "knyst_airwindows",
+  "knyst_waveguide2",
+  "knyst_visualiser",
+  "knyst_bela",
+]
+resolver = "2"

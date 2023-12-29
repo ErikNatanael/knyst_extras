@@ -1,0 +1,16 @@
+[package]
+name = "knyst_reverb"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.75"
+fastrand = "2.0.1"
+knyst = { path = "../../knyst/knyst/", version = "0.5.0", default-features = false }
+rand = "0.8.5"
+rand_distr = "0.4.3"
+
+[dev-dependencies]
+knyst = { path = "../../knyst/knyst/", version = "0.5.0", features = ["jack"] }

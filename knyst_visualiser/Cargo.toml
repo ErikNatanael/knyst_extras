@@ -1,0 +1,24 @@
+[package]
+name = "knyst_visualiser"
+version = "0.1.0"
+edition = "2021"
+
+# Enable a small amount of optimization in debug mode
+[profile.dev]
+opt-level = 1
+
+# Enable high optimizations for dependencies (incl. Bevy), but not for our code:
+[profile.dev.package."*"]
+opt-level = 3
+
+
+[dependencies]
+atomic_float = "0.1.0"
+bevy = "0.12.0"
+bevy_egui = "0.24"
+bevy_mod_picking = "0.17.0"
+knyst = { path = "/home/erik/code/rust/audio/knyst/knyst" }
+rand = "0.8.5"
+
+[dev-dependencies]
+color-eyre = "0.6.2"

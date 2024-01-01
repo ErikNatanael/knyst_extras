@@ -2,7 +2,6 @@ use color_eyre::Result;
 use knyst::audio_backend::JackBackend;
 use knyst::controller::print_error_handler;
 use knyst::envelope::Envelope;
-use knyst::gen::delay::static_sample_delay;
 use knyst::handles::{handle, Handle};
 use knyst::prelude::*;
 use knyst::*;

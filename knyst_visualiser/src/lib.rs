@@ -11,13 +11,19 @@ pub use probe::*;
 use std::sync::{mpsc::Receiver, Arc};
 
 use atomic_float::AtomicF32;
-use bevy::{core::Zeroable, prelude::*, sprite::MaterialMesh2dBundle, window::PrimaryWindow};
+use bevy::{
+    core::Zeroable,
+    prelude::*,
+    sprite::MaterialMesh2dBundle,
+    utils::hashbrown::{HashMap, HashSet},
+    window::PrimaryWindow,
+};
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use knyst::{
-    controller::KnystCommands,
     graph::NodeId,
     inspection::{GraphInspection, NodeInspection},
-    knyst,
+    knyst_commands,
+    prelude::*,
 };
 use parameter::get_new_parameters;
 use probe::get_new_probes;
@@ -80,6 +86,12 @@ struct GraphOutputs {
 }
 
 #[derive(Component)]
+struct GraphInputs {
+    num_inputs: usize,
+    graph_id: u64,
+}
+
+#[derive(Component)]
 struct NodeEdge {
     from_entity: Entity,
     to_entity: Entity,
@@ -115,6 +127,7 @@ fn update_inspection(
     mut graph_query: Query<(&mut Graph)>,
     mut node_query: Query<(&mut Node, Entity)>,
     mut q_graph_output: Query<(&mut GraphOutputs, Entity)>,
+    mut q_graph_inputs: Query<(&mut GraphInputs, Entity)>,
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -127,7 +140,7 @@ fn update_inspection(
             new_inspection_available = true;
         }
     } else {
-        let inspection_receiver = knyst().request_inspection();
+        let inspection_receiver = knyst_commands().request_inspection();
         knyst_data.next_receiver = Some(inspection_receiver);
     }
     let font = asset_server.load("fonts/Terminess (TTF) Bold Nerd Font Complete.ttf");
@@ -142,10 +155,11 @@ fn update_inspection(
     let mut new_nodes = vec![];
     let mut all_node_ids = vec![];
     if new_inspection_available {
-        let graph_output_entity = if q_graph_output.is_empty() {
+        let (graph_output_entity, graph_inputs_entity) = if q_graph_output.is_empty() {
             let graph_outputs = knyst_data.latest_inspection.num_outputs;
-            // Spawn a new node
-            let parent = commands
+            let graph_inputs = knyst_data.latest_inspection.num_inputs;
+            // Spawn GraphOutputs
+            let outputs = commands
                 .spawn((
                     SpatialBundle {
                         transform: Transform::from_translation(Vec3::new(500., 0., 0.)),
@@ -179,11 +193,49 @@ fn update_inspection(
                 .id();
             children.push(rect);
             children.push(name);
-            commands.entity(parent).push_children(&children);
-            parent
+            commands.entity(outputs).push_children(&children);
+
+            // Spawn GraphInputs
+            let inputs = commands
+                .spawn((
+                    SpatialBundle {
+                        transform: Transform::from_translation(Vec3::new(500., 0., 0.)),
+                        ..Default::default()
+                    },
+                    Velocity(Vec2::ZERO),
+                    GraphInputs {
+                        num_inputs: graph_inputs,
+                        graph_id: knyst_data.latest_inspection.graph_id,
+                    },
+                ))
+                .id();
+            let mut children = Vec::new();
+            let rect = commands
+                .spawn((SpriteBundle {
+                    sprite: Sprite {
+                        color: Color::rgb(0.0, 0.25, 0.75),
+                        custom_size: Some(Vec2::new(160.0, 15. * graph_inputs as f32)),
+                        ..default()
+                    },
+                    transform: Transform::from_translation(Vec3::new(0., 0., 0.)),
+                    ..default()
+                },))
+                .id();
+            let name = commands
+                .spawn((Text2dBundle {
+                    text: Text::from_section("GraphInputs", text_style.clone())
+                        .with_alignment(text_alignment),
+                    ..default()
+                },))
+                .id();
+            children.push(rect);
+            children.push(name);
+            commands.entity(inputs).push_children(&children);
+            (outputs, inputs)
         } else {
-            let (_, entity) = q_graph_output.single();
-            entity
+            let (_, outputs_entity) = q_graph_output.single();
+            let (_, inputs_entity) = q_graph_inputs.single();
+            (outputs_entity, inputs_entity)
         };
         for edge in &knyst_data.latest_inspection.graph_output_input_edges {
             edges_to_add.push((*edge, graph_output_entity));
@@ -315,7 +367,7 @@ fn update_inspection(
                         }
                     }
                 }
-                knyst::inspection::EdgeSource::Graph => todo!(),
+                knyst::inspection::EdgeSource::Graph => Some(graph_inputs_entity),
             };
 
             if let Some(source) = source {
@@ -342,35 +394,119 @@ fn draw_edges(
     mut gizmos: Gizmos,
     node_query: Query<(&Node, &Transform)>,
     graph_output_query: Query<(&GraphOutputs, &Transform)>,
+    graph_inputs_query: Query<(&GraphInputs, &Transform)>,
     edge_query: Query<(&NodeEdge)>,
+    mut knyst_data: NonSendMut<KnystData>,
 ) {
-    for edge in edge_query.iter() {
-        let NodeEdge {
-            from_entity,
-            to_entity,
-            from_channel_index,
-            to_channel_index,
-        } = edge;
-        let origin_pos = if let Ok((_, from_node_transform)) = node_query.get(*from_entity) {
-            from_node_transform.translation.xy()
-                + Vec2::new(80., *from_channel_index as f32 * -15.0 + 7.5)
-        } else {
-            Vec2::new(0.0, 0.0)
-        };
-
-        let end_pos = if let Ok((_, to_node_transform)) = node_query.get(*to_entity) {
-            to_node_transform.translation.xy()
-                + Vec2::new(-80., *to_channel_index as f32 * -15.0 + 7.5)
-        } else {
-            if let Ok((_, to_graph_transform)) = graph_output_query.get(*to_entity) {
-                to_graph_transform.translation.xy()
-                    + Vec2::new(-80., *to_channel_index as f32 * -15.0 + 7.5)
-            } else {
-                Vec2::new(0., 0.)
+    for node in &knyst_data.latest_inspection.nodes {
+        if let Some((n, end_transform)) = node_query
+            .iter()
+            .find(|(n, transform)| node.address == n.id)
+        {
+            let end_pos = end_transform.translation.xy();
+            let end_height = node_height(node.input_channels.len(), node.output_channels.len());
+            for edge in &node.input_edges {
+                let (from_pos, from_height) = match edge.source {
+                    knyst::inspection::EdgeSource::Node(n_index) => {
+                        let source_id = knyst_data.latest_inspection.nodes[n_index].address;
+                        let (from_node, from_transform) = node_query
+                            .iter()
+                            .find(|(n, _transform)| source_id == n.id)
+                            .unwrap();
+                        (
+                            from_transform.translation.xy(),
+                            node_height(from_node.num_inputs, from_node.num_outputs),
+                        )
+                    }
+                    knyst::inspection::EdgeSource::Graph => {
+                        if let Ok((gi, from_graph_transform)) = graph_inputs_query.get_single() {
+                            let height = node_height(0, gi.num_inputs);
+                            (from_graph_transform.translation.xy(), height)
+                        } else {
+                            (Vec2::new(0., 0.), 0.)
+                        }
+                    }
+                };
+                let from_pos = from_pos
+                    + Vec2::new(
+                        80.,
+                        edge.from_index as f32 * -15.0 + from_height * 0.5 - 7.5,
+                    );
+                let end_pos = end_pos
+                    + Vec2::new(-80., edge.to_index as f32 * -15.0 + end_height * 0.5 - 7.5);
+                gizmos.line_2d(from_pos, end_pos, Color::RED);
             }
-        };
-        gizmos.line_2d(origin_pos, end_pos, Color::RED);
+        }
     }
+    // Graph output edges
+
+    if let Ok((go, to_graph_transform)) = graph_output_query.get_single() {
+        let end_pos = to_graph_transform.translation.xy();
+        let end_height = node_height(go.num_outputs, 0);
+        for edge in &knyst_data.latest_inspection.graph_output_input_edges {
+            let (from_pos, from_height) = match edge.source {
+                knyst::inspection::EdgeSource::Node(n_index) => {
+                    let source_id = knyst_data.latest_inspection.nodes[n_index].address;
+                    let (from_node, from_transform) = node_query
+                        .iter()
+                        .find(|(n, _transform)| source_id == n.id)
+                        .unwrap();
+                    (
+                        from_transform.translation.xy(),
+                        node_height(from_node.num_inputs, from_node.num_outputs),
+                    )
+                }
+                knyst::inspection::EdgeSource::Graph => {
+                    if let Ok((gi, from_graph_transform)) = graph_inputs_query.get_single() {
+                        let height = node_height(0, gi.num_inputs);
+                        (from_graph_transform.translation.xy(), height)
+                    } else {
+                        (Vec2::new(0., 0.), 0.)
+                    }
+                }
+            };
+            let from_pos = from_pos
+                + Vec2::new(
+                    80.,
+                    edge.from_index as f32 * -15.0 + from_height * 0.5 - 7.5,
+                );
+            let end_pos =
+                end_pos + Vec2::new(-80., edge.to_index as f32 * -15.0 + end_height * 0.5 - 7.5);
+            gizmos.line_2d(from_pos, end_pos, Color::RED);
+        }
+    }
+    // for edge in edge_query.iter() {
+    //     let NodeEdge {
+    //         from_entity,
+    //         to_entity,
+    //         from_channel_index,
+    //         to_channel_index,
+    //     } = edge;
+    //     let origin_pos = if let Ok((_, from_node_transform)) = node_query.get(*from_entity) {
+    //         from_node_transform.translation.xy()
+    //             + Vec2::new(80., *from_channel_index as f32 * -15.0 + 7.5)
+    //     } else {
+    //         if let Ok((_, from_graph_transform)) = graph_inputs_query.get(*from_entity) {
+    //             from_graph_transform.translation.xy()
+    //                 + Vec2::new(-80., *to_channel_index as f32 * -15.0 + 7.5)
+    //         } else {
+    //             Vec2::new(0., 0.)
+    //         }
+    //     };
+
+    //     let end_pos = if let Ok((_, to_node_transform)) = node_query.get(*to_entity) {
+    //         to_node_transform.translation.xy()
+    //             + Vec2::new(-80., *to_channel_index as f32 * -15.0 + 7.5)
+    //     } else {
+    //         if let Ok((_, to_graph_transform)) = graph_output_query.get(*to_entity) {
+    //             to_graph_transform.translation.xy()
+    //                 + Vec2::new(-80., *to_channel_index as f32 * -15.0 + 7.5)
+    //         } else {
+    //             Vec2::new(0., 0.)
+    //         }
+    //     };
+    //     gizmos.line_2d(origin_pos, end_pos, Color::RED);
+    // }
 }
 
 fn update_velocities(
@@ -445,63 +581,147 @@ fn apply_velocities(mut node_query: Query<(&Node, &mut Transform, &Velocity)>) {
 }
 
 fn move_nodes(
-    mut node_query: Query<(&mut Node, &mut Transform), Without<GraphOutputs>>,
+    mut node_query: Query<(&mut Node, &mut Transform, Entity), Without<GraphOutputs>>,
     q_graph_outputs: Query<(&Transform, Entity, &GraphOutputs)>,
-    edge_query: Query<&NodeEdge>,
+    mut q_graph_inputs: Query<
+        &mut Transform,
+        (With<GraphInputs>, Without<GraphOutputs>, Without<Node>),
+    >,
+    // edge_query: Query<&NodeEdge>,
+    mut knyst_data: NonSendMut<KnystData>,
 ) {
     let mut node_entities_in_current_column = vec![];
     let mut node_entities_to_put_in_the_next_column = vec![];
+    let mut moved_entities = HashSet::new();
+    let mut node_column_map = HashMap::new();
     // First find the inputs to the GraphOutputs and to nodes that are unconnected to the graph outputs.
     // TODO: unconnected nodes
-    let column_size = 180.;
+    let column_size = 280.;
     let row_gap = 10.;
     let Ok((go_transform, go_entity, go)) = q_graph_outputs.get_single() else {
         warn!("No GraphOutputs");
         return;
     };
     node_entities_in_current_column.push(go_entity);
-    let start_y = go_transform.translation.y;
-    let mut current_column = go_transform.translation.x - column_size;
-    let mut previous_column_height = node_height(go.num_outputs, go.num_outputs);
+    node_column_map.insert(go_entity, (0, node_height(go.num_outputs, go.num_outputs)));
+    // Unconnected nodes
+    for unconnected in &knyst_data.latest_inspection.unconnected_nodes {
+        let id = knyst_data.latest_inspection.nodes[*unconnected].address;
+        if let Some((node, _transform, entity)) =
+            node_query.iter().find(|(node, _, _)| node.id == id)
+        {
+            node_entities_in_current_column.push(entity);
+            moved_entities.insert(entity);
+            node_column_map.insert(entity, (0, node_height(node.num_inputs, node.num_outputs)));
+
+            // transform.translation.x = current_column;
+            // transform.translation.y = y + start_y;
+            // y -= node_height(node.num_inputs, node.num_outputs) + row_gap;
+        }
+    }
+
+    let mut current_column_num = 1;
     while !node_entities_in_current_column.is_empty() {
-        for edge in edge_query.iter() {
-            if node_entities_in_current_column.contains(&edge.to_entity) {
-                if !node_entities_to_put_in_the_next_column.contains(&edge.from_entity) {
-                    node_entities_to_put_in_the_next_column.push(edge.from_entity);
+        // Find the node
+        for node_entity in &node_entities_in_current_column {
+            if let Ok((node, _transform, _entity)) = node_query.get(*node_entity) {
+                // Find edges
+                let node_inspection = knyst_data
+                    .latest_inspection
+                    .nodes
+                    .iter()
+                    .find(|ni| ni.address == node.id)
+                    .unwrap();
+                for edge in &node_inspection.input_edges {
+                    match edge.source {
+                        knyst::inspection::EdgeSource::Node(index) => {
+                            let from_id = knyst_data.latest_inspection.nodes[index].address;
+                            if let Some((_, _, from_entity)) =
+                                node_query.iter().find(|(n, _, _)| n.id == from_id)
+                            {
+                                node_entities_to_put_in_the_next_column.push(from_entity);
+                                moved_entities.insert(from_entity);
+                            }
+                        }
+                        knyst::inspection::EdgeSource::Graph => (),
+                    }
+                }
+            } else if *node_entity == go_entity {
+                for edge in &knyst_data.latest_inspection.graph_output_input_edges {
+                    match edge.source {
+                        knyst::inspection::EdgeSource::Node(index) => {
+                            let from_id = knyst_data.latest_inspection.nodes[index].address;
+                            if let Some((_, _, from_entity)) =
+                                node_query.iter().find(|(n, _, _)| n.id == from_id)
+                            {
+                                node_entities_to_put_in_the_next_column.push(from_entity);
+                                moved_entities.insert(from_entity);
+                            }
+                        }
+                        knyst::inspection::EdgeSource::Graph => (),
+                    }
                 }
             }
         }
-        //
-        let mut y = 0.;
+        // for edge in edge_query.iter() {
+        //     if node_entities_in_current_column.contains(&edge.to_entity) {
+        //         if !node_entities_to_put_in_the_next_column.contains(&edge.from_entity) {
+        //             node_entities_to_put_in_the_next_column.push(edge.from_entity);
+        //             moved_entities.insert(edge.from_entity);
+        //         }
+        //     }
+        // }
         for node_entity in &node_entities_to_put_in_the_next_column {
-            // Calculate column height
-            if let Ok((node, mut transform)) = node_query.get_mut(*node_entity) {
-                y -= node_height(node.num_inputs, node.num_outputs) + row_gap;
+            if let Ok((node, _transform, _)) = node_query.get(*node_entity) {
+                node_column_map.insert(
+                    *node_entity,
+                    (
+                        current_column_num,
+                        node_height(node.num_inputs, node.num_outputs),
+                    ),
+                );
             }
         }
-        let start_y = y / -2.;
-        y = 0.;
-        let row_gap = ((previous_column_height.abs() - (y).abs())
-            / (node_entities_to_put_in_the_next_column.len() + 1) as f32)
-            .max(row_gap);
-        for node_entity in &node_entities_to_put_in_the_next_column {
-            // Move
-            if let Ok((node, mut transform)) = node_query.get_mut(*node_entity) {
-                transform.translation.x = current_column;
-                transform.translation.y = y + start_y;
-                y -= node_height(node.num_inputs, node.num_outputs) + row_gap;
-            }
-        }
-        current_column -= column_size;
+        current_column_num += 1;
         std::mem::swap(
             &mut node_entities_in_current_column,
             &mut node_entities_to_put_in_the_next_column,
         );
         node_entities_to_put_in_the_next_column.clear();
-        previous_column_height = y;
+    }
+    // Transfer from the hashmap to a vec of vecs
+    let mut columns = vec![vec![]; current_column_num as usize];
+    for (entity, (column_num, height)) in node_column_map.into_iter() {
+        columns[column_num as usize].push((entity, height));
+    }
+    // Move nodes
+    let mut current_column = go_transform.translation.x;
+    for column in columns {
+        let total_height: f32 = column.iter().map(|(_entity, height)| *height).sum();
+        let start_y = total_height / 2.;
+        let mut y = 0.;
+
+        for (entity, height) in column {
+            if let Ok((_node, mut transform, _)) = node_query.get_mut(entity) {
+                y -= height * 0.5;
+                transform.translation.x = current_column;
+                transform.translation.y = y + start_y;
+                y -= height * 0.5 + row_gap;
+            }
+        }
+        current_column -= column_size;
+    }
+    // Set the GraphInputs to the furthest column
+    if let Ok(mut transform) = q_graph_inputs.get_single_mut() {
+        transform.translation.x = current_column;
+        transform.translation.y = 0.;
     }
 
-    // Recursively add any inputs to the current column until there are no more
+    for (node, _, entity) in node_query.iter() {
+        if !moved_entities.contains(&entity) {
+            warn!("Node {:?} not moved", node.id);
+        }
+    }
 }
 
 fn move_camera_mouse(
@@ -514,19 +734,23 @@ fn move_camera_mouse(
         let window_height = q_windows.single().height();
         let window_width = q_windows.single().width();
         let margin = 50.;
-        let speed = 5.;
+        let speed = 10.;
         let mut vel = Vec2::zeroed();
         if position.x < margin {
-            vel += Vec2::new(speed * -1., 0.0);
+            let dist = position.x / margin;
+            vel += Vec2::new(speed * -1. * (1.0 - dist + 0.7).powi(2), 0.0);
         }
         if position.y < margin {
-            vel += Vec2::new(0.0, speed);
+            let dist = position.y / margin;
+            vel += Vec2::new(0.0, speed * (1.0 - dist + 0.7).powi(2));
         }
         if position.x > window_width - margin {
-            vel += Vec2::new(speed, 0.0);
+            let dist = (window_width - position.x) / margin;
+            vel += Vec2::new(speed * (1.0 - dist + 0.7).powi(2), 0.0);
         }
         if position.y > window_height - margin {
-            vel += Vec2::new(0.0, speed * -1.);
+            let dist = (window_height - position.y) / margin;
+            vel += Vec2::new(0.0, speed * -1. * (1.0 - dist + 0.7).powi(2));
         }
         q_camera.single_mut().translation += Vec3::from((vel, 0.0));
     } else {
@@ -608,6 +832,45 @@ fn ui_state(mut contexts: EguiContexts, knyst_data: NonSend<KnystData>) {
             ui.label(format!("{total_num_graphs}"));
             ui.label("Nodes:");
             ui.label(format!("{total_num_nodes}"));
+        });
+        ui.heading("Unconnected nodes");
+        egui::Grid::new("unconnected").show(ui, |ui| {
+            for i in &knyst_data.latest_inspection.unconnected_nodes {
+                ui.label(format!("{:?}", knyst_data.latest_inspection.nodes[*i]));
+                ui.end_row();
+            }
+        });
+        ui.heading("Unreported unconnected nodes");
+        egui::Grid::new("uunconnected").show(ui, |ui| {
+            for (i, n) in knyst_data.latest_inspection.nodes.iter().enumerate() {
+                if let None = knyst_data
+                    .latest_inspection
+                    .graph_output_input_edges
+                    .iter()
+                    .find(|edge| matches!(edge.source, knyst::inspection::EdgeSource::Node(a) if a == i))
+                {
+                    let mut found = false;
+                    for (j, m) in knyst_data.latest_inspection.nodes.iter().enumerate() {
+                        if let Some(_) = m.input_edges.iter().find(|edge| {
+                            matches!(edge.source, knyst::inspection::EdgeSource::Node(a) if a==i)
+                        }) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        ui.label(format!("{:?}", knyst_data.latest_inspection.nodes[i]));
+                        ui.end_row();
+                    }
+                }
+            }
+        });
+        ui.heading("Nodes pending removal");
+        egui::Grid::new("unconnected").show(ui, |ui| {
+            for i in &knyst_data.latest_inspection.nodes_pending_removal {
+                ui.label(format!("{:?}", knyst_data.latest_inspection.nodes[*i]));
+                ui.end_row();
+            }
         });
     });
 }

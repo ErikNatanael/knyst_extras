@@ -1,4 +1,4 @@
-use std::{sync::{Arc, Mutex, OnceLock}, process::id};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use atomic_float::AtomicF32;
 use knyst::{prelude::*, Sample};
@@ -32,6 +32,6 @@ impl Probe {
         GenState::Continue
     }
     pub fn init(&mut self, id: NodeId) {
-      register_new_probe(id, self.value.clone());
+        register_new_probe(id, self.value.clone());
     }
 }

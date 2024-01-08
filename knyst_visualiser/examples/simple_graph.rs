@@ -27,7 +27,7 @@ fn main() -> Result<()> {
         for &freq in [1.0, 1.5, 5. / 4., 9. / 8.].iter().cycle() {
             let mut rng = rand::thread_rng();
             // for _ in 0..10 {
-            let g = upload_graph(knyst().default_graph_settings(), || {
+            let g = upload_graph(knyst_commands().default_graph_settings(), || {
                 let freq = (sine().freq(
                     sine()
                         .freq(
@@ -49,7 +49,8 @@ fn main() -> Result<()> {
             graph_output(0, g);
             // }
             // new graph
-            knyst().init_local_graph(knyst().default_graph_settings().num_inputs(1));
+            knyst_commands()
+                .init_local_graph(knyst_commands().default_graph_settings().num_inputs(1));
             let root = graph_input(0, 1);
             let sig = sine().freq(freq as f32 * root).out("sig") * 0.25;
             let env = Envelope {
@@ -62,7 +63,7 @@ fn main() -> Result<()> {
 
             graph_output(0, sig.repeat_outputs(1));
             // push graph to sphere
-            let graph = knyst().upload_local_graph();
+            let graph = knyst_commands().upload_local_graph();
             graph.set(0, root_freq);
             // let sig = graph + static_sample_delay(48 * 500).input(graph);
 

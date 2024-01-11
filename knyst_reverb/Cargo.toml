@@ -8,9 +8,13 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.75"
 fastrand = "2.0.1"
-knyst = { path = "../../knyst/knyst/", version = "0.5.0", default-features = false }
+# knyst = { path = "../../knyst/knyst/", version = "0.5.0", default-features = false }
+knyst = { git = "https://github.com/ErikNatanael/knyst.git", default-features = false }
 rand = "0.8.5"
 rand_distr = "0.4.3"
 
 [dev-dependencies]
-knyst = { path = "../../knyst/knyst/", version = "0.5.0", features = ["jack"] }
+# knyst = { path = "../../knyst/knyst/", version = "0.5.0", features = ["jack"] }
+knyst = { git = "https://github.com/ErikNatanael/knyst.git", features = [
+  "jack",
+] }

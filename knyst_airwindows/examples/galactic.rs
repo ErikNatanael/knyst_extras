@@ -4,7 +4,7 @@ use knyst::{
     controller::print_error_handler,
     envelope::Envelope,
     handles::{graph_output, handle, Handle},
-    modal_interface::knyst,
+    modal_interface::knyst_commands,
     prelude::*,
     sphere::{KnystSphere, SphereSettings},
     trig::interval_trig,
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     );
 
     let mut rng = thread_rng();
-    knyst().init_local_graph(knyst().default_graph_settings());
+    knyst_commands().init_local_graph(knyst_commands().default_graph_settings());
     for freq in [300, 400, 500, 600, 700, 800].iter() {
         let sig = sine().freq(*freq as Sample).out("sig") * 0.25;
         let env = Envelope {
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
             );
         graph_output(0, sig);
     }
-    let sig = knyst().upload_local_graph();
+    let sig = knyst_commands().upload_local_graph().unwrap();
     let verb = galactic()
         .size(1.0)
         .brightness(0.9)

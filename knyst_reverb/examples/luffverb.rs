@@ -4,7 +4,7 @@ use knyst::{
     controller::print_error_handler,
     envelope::Envelope,
     handles::{graph_output, handle, Handle},
-    modal_interface::knyst,
+    modal_interface::knyst_commands,
     prelude::*,
     sphere::{KnystSphere, SphereSettings},
     trig::interval_trig,
@@ -26,7 +26,7 @@ fn main() -> Result<()> {
 
     let mut rng = thread_rng();
     // Put all the different sine oscillators inside a graph
-    let sine_graph = upload_graph(knyst().default_graph_settings(), || {
+    let sine_graph = upload_graph(knyst_commands().default_graph_settings(), || {
         for freq_mul in [3, 4, 5, 6, 7, 8].iter() {
             // Get the root frequency from the graph input
             let root_freq = graph_input(0, 1);

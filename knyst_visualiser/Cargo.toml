@@ -17,7 +17,7 @@ atomic_float = "0.1.0"
 bevy = "0.12.0"
 bevy_egui = "0.24"
 bevy_mod_picking = "0.17.0"
-knyst = { path = "/home/erik/code/rust/audio/knyst/knyst" }
+knyst = { git = "https://github.com/ErikNatanael/knyst.git" }
 rand = "0.8.5"
 
 [dev-dependencies]

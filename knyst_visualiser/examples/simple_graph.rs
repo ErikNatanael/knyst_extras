@@ -4,7 +4,6 @@ use knyst::controller::print_error_handler;
 use knyst::envelope::Envelope;
 use knyst::handles::{handle, Handle};
 use knyst::prelude::*;
-use knyst::*;
 use knyst_visualiser::parameter::parameter;
 use knyst_visualiser::probe;
 use rand::Rng;
@@ -63,7 +62,7 @@ fn main() -> Result<()> {
 
             graph_output(0, sig.repeat_outputs(1));
             // push graph to sphere
-            let graph = knyst_commands().upload_local_graph();
+            let graph = knyst_commands().upload_local_graph().unwrap();
             graph.set(0, root_freq);
             // let sig = graph + static_sample_delay(48 * 500).input(graph);
 

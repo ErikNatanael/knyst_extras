@@ -1,3 +1,6 @@
+use knyst::{gen::filter::one_pole::OnePole, prelude::*, trig::is_trigger};
+
+use crate::AllpassFeedbackDelay;
 // This waveguide implementation mirrors the one outlined in Palle Dahlstedt's
 //  "Physical Interactions with Digital Strings - A hybrid approach to a digital keyboard instrument"
 // It allows you to stop the string to some variable degree.
@@ -18,13 +21,12 @@ pub struct SplitWaveguide {
     last_position: Sample,
     last_damping: Sample,
     last_lf_damping: Sample,
-    dc_blocker: [OnePole<f64>; 1],
     lp_filter: [OnePole<f64>; 4],
     hp_filter: [OnePole<f64>; 1],
     lp_filter_delay_compensation: f64,
 }
 
-impl Waveguide {
+impl SplitWaveguide {
     pub fn reset(&mut self) {
         // dbg!("Reset", self.last_delay_outputs);
         for delay in &mut self.delays {
@@ -36,19 +38,15 @@ impl Waveguide {
         for filter in &mut self.hp_filter {
             filter.reset();
         }
-        for filter in &mut self.dc_blocker {
-            filter.reset();
+        for sample in self.last_delay_outputs.iter_mut() {
+            *sample = 0.0;
         }
-        self.last_delay_outputs[0] = 0.0;
-        self.last_delay_outputs[1] = 0.0;
     }
     pub fn set_damping(&mut self, damping: f64, high_pass_damping: f64, sample_rate: f64) {
         for i in 0..4 {
             self.lp_filter[i].set_freq_lowpass(damping, sample_rate);
         }
         self.hp_filter[0].set_freq_highpass(high_pass_damping, sample_rate);
-        // TODO: DC blocker HPF doesn't work
-        self.dc_blocker[0].set_freq_highpass(30.0, sample_rate);
 
         self.lp_filter_delay_compensation =
             self.lp_filter[0].cheap_tuning_compensation_lpf() * -0.5;
@@ -82,31 +80,51 @@ impl Waveguide {
         }
         self.delays[0].set_delay_in_frames(delay0_time);
         self.delays[1].set_delay_in_frames(delay1_time);
-        self.delays[2].set_delay_in_frames(delay0_time);
-        self.delays[3].set_delay_in_frames(delay1_time);
+        self.delays[2].set_delay_in_frames(delay1_time);
+        self.delays[3].set_delay_in_frames(delay0_time);
         // self.dc_blocker.set_freq_lowpass(30.0, sample_rate);
     }
-    pub fn process_sample(&mut self, exciter_input: f64, feedback: f64) -> Sample {
+    pub fn process_sample(
+        &mut self,
+        exciter_input: f64,
+        feedback: f64,
+        stop_amount: f64,
+    ) -> Sample {
         let mut sig = 0.0;
-        for i in 0..2 {
-            let cross_delay_feedback = self.last_delay_outputs[1 - i];
+        for i in 0..4 {
+            let prev_node_index = if i == 0 { 3 } else { i - 1 };
+            let cross_delay_feedback = self.last_delay_outputs[prev_node_index];
+            let mut segment_sig = cross_delay_feedback;
+            // Put the delayed signal through an LPF and apply the relevant coefficient
             // let delay_input = (cross_delay_feedback).tanh();
-            let delay_input = non_linearity(cross_delay_feedback);
-            // let delay_input = cross_delay_feedback;
-            let delay_output = self.delays[i].process(delay_input);
-            let inner_sig = delay_output + exciter_input;
-            // TODO: DC blocker HPF doesn't work
-            // let inner_sig = self.dc_blocker[i].process(inner_sig);
-            if i == 0 {
-                let inner_sig = self.lp_filter[0].process_lp(inner_sig);
-                let inner_sig = self.hp_filter[0].process_hp(inner_sig);
-                self.last_delay_outputs[i] = inner_sig * feedback * -1.;
-                sig += inner_sig;
-                // sig += inner_sig * 2.0;
+            if i == 0 || i == 2 {
+                // nut/bridge
+                // phase shift 180degrees
+                segment_sig = self.lp_filter[prev_node_index].process_lp(segment_sig);
+                segment_sig *= -1. * feedback;
             } else {
-                self.last_delay_outputs[i] = inner_sig * feedback * -1.;
-                sig += inner_sig;
+                // previous open string segment + excitation signal + previous stopped string segment
+                let previous_open_string_segment = segment_sig * (1.0 - stop_amount);
+                let previous_stopped_string_segment =
+                    self.last_delay_outputs[if i == 3 { 0 } else { 2 }];
+                let previous_stopped_string_segment = self.lp_filter[prev_node_index]
+                    .process_lp(previous_stopped_string_segment)
+                    * stop_amount;
+                // input amount depends on how stopped the string is
+
+                segment_sig =
+                    previous_stopped_string_segment + previous_open_string_segment + exciter_input;
             }
+
+            let delay_input = non_linearity(segment_sig);
+            // let delay_input = cross_delay_feedback;
+            let mut delay_output = self.delays[i].process(delay_input);
+            if i == 0 {
+                // After Delay0, tap the signal and apply a DC blocker
+                sig += delay_output;
+                delay_output = self.hp_filter[0].process_hp(delay_output);
+            }
+            self.last_delay_outputs[i] = delay_output;
         }
         sig as Sample
     }
@@ -117,20 +135,21 @@ fn non_linearity(x: f64) -> f64 {
     x - (x.powi(3) / 3.)
 }
 #[impl_gen]
-impl Waveguide {
+impl SplitWaveguide {
     pub fn new() -> Self {
         Self {
             delays: [
                 AllpassFeedbackDelay::new(192000 / 20),
                 AllpassFeedbackDelay::new(192000 / 20),
+                AllpassFeedbackDelay::new(192000 / 20),
+                AllpassFeedbackDelay::new(192000 / 20),
             ],
-            last_delay_outputs: [0.0, 0.0],
+            last_delay_outputs: [0.0; 4],
             last_freq: 0.0,
             last_position: 0.0,
             last_damping: 0.0,
             last_lf_damping: 0.0,
-            dc_blocker: [OnePole::new()],
-            lp_filter: [OnePole::new()],
+            lp_filter: [OnePole::new(); 4],
             hp_filter: [OnePole::new()],
             lp_filter_delay_compensation: 0.0,
         }
@@ -140,14 +159,15 @@ impl Waveguide {
             delays: [
                 AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
                 AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
+                AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
+                AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
             ],
-            last_delay_outputs: [0.0, 0.0],
+            last_delay_outputs: [0.0; 4],
             last_freq: 0.0,
             last_position: 0.0,
             last_damping: 0.0,
             last_lf_damping: 0.0,
-            dc_blocker: [OnePole::new()],
-            lp_filter: [OnePole::new()],
+            lp_filter: [OnePole::new(); 4],
             hp_filter: [OnePole::new()],
             lp_filter_delay_compensation: 0.0,
         };
@@ -162,6 +182,7 @@ impl Waveguide {
         damping: &[Sample],
         lf_damping: &[Sample],
         delay_compensation: &[Sample],
+        stop_amount: &[Sample],
         reset_trig: &[Sample],
         output: &mut [Sample],
         sample_rate: SampleRate,
@@ -171,12 +192,15 @@ impl Waveguide {
             (
                 (
                     (
-                        (((((&exciter, &freq), &position), &feedback), &stiffness), &damping),
-                        &lf_damping,
+                        (
+                            (((((&exciter, &freq), &position), &feedback), &stiffness), &damping),
+                            &lf_damping,
+                        ),
+                        &delay_comp,
                     ),
-                    &delay_comp,
+                    &reset_trig,
                 ),
-                &reset_trig,
+                &stop_amount,
             ),
             output,
         ) in exciter
@@ -189,6 +213,7 @@ impl Waveguide {
             .zip(lf_damping)
             .zip(delay_compensation)
             .zip(reset_trig)
+            .zip(stop_amount)
             .zip(output.iter_mut())
         {
             if is_trigger(reset_trig) {
@@ -214,10 +239,11 @@ impl Waveguide {
                 self.last_freq = freq;
                 self.last_position = position;
             }
-            for i in 0..2 {
+            for i in 0..4 {
                 self.delays[i].feedback = stiffness as f64;
             }
-            *output = self.process_sample(exciter as f64, feedback as f64);
+            let stop_amount = smootherstep(0.0, 1.0, stop_amount as f64);
+            *output = self.process_sample(exciter as f64, feedback as f64, stop_amount as f64);
             if output.is_nan() {
                 dbg!(
                     freq,
@@ -242,4 +268,11 @@ fn delay_times(freq: f64, position: f64) -> (f64, f64) {
     let time0 = total_delay * position;
     let time1 = total_delay - time0;
     (time0, time1)
+}
+
+fn smootherstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    // Scale, and clamp x to 0..1 range
+    let x = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+
+    x * x * x * (x * (6.0 * x - 15.0) + 10.0)
 }

@@ -6,6 +6,7 @@
 mod delay;
 pub mod double_buffer_waveguide;
 pub mod parallel_bpf_waveguide;
+pub mod split_string;
 use std::f32::consts::{PI, TAU};
 
 use delay::*;

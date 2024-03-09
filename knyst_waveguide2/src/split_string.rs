@@ -59,7 +59,7 @@ impl SplitWaveguide {
         // We need to compensate more when there's a stop because when the string is stopped the compensation is carried by fewer delay lines
         self.lp_filter_delay_compensation =
             self.lp_filter[0].cheap_tuning_compensation_lpf() * (-1. - stop_amount * 0.5);
-        dbg!(self.lp_filter_delay_compensation, self.lp_filter[0]);
+        // dbg!(self.lp_filter_delay_compensation, self.lp_filter[0]);
         if self.lp_filter_delay_compensation.is_nan() {
             dbg!(
                 damping,

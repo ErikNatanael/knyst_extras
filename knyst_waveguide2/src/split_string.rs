@@ -13,6 +13,7 @@ use crate::AllpassFeedbackDelay;
 /// 3. "feedback": feedback amount
 /// *outputs*
 /// 0. "sig": output signal
+#[derive(Clone, Debug)]
 pub struct SplitWaveguide {
     // one backwards and one forwards delay enables us setting the position of the excitation input signal
     delays: [AllpassFeedbackDelay; 4],
@@ -42,14 +43,32 @@ impl SplitWaveguide {
             *sample = 0.0;
         }
     }
-    pub fn set_damping(&mut self, damping: f64, high_pass_damping: f64, sample_rate: f64) {
+    pub fn set_damping(
+        &mut self,
+        damping: f64,
+        high_pass_damping: f64,
+        sample_rate: f64,
+        stop_amount: f64,
+    ) {
+        let damping = damping.clamp(0.0, 20000.);
         for i in 0..4 {
             self.lp_filter[i].set_freq_lowpass(damping, sample_rate);
         }
         self.hp_filter[0].set_freq_highpass(high_pass_damping, sample_rate);
 
+        // We need to compensate more when there's a stop because when the string is stopped the compensation is carried by fewer delay lines
         self.lp_filter_delay_compensation =
-            self.lp_filter[0].cheap_tuning_compensation_lpf() * -0.5;
+            self.lp_filter[0].cheap_tuning_compensation_lpf() * (-1. - stop_amount * 0.5);
+        dbg!(self.lp_filter_delay_compensation, self.lp_filter[0]);
+        if self.lp_filter_delay_compensation.is_nan() {
+            dbg!(
+                damping,
+                sample_rate,
+                self.lp_filter_delay_compensation,
+                self.lp_filter
+            );
+            panic!("lp delay comp is nan");
+        }
         // self.lp_filter_delay_compensation = OnePole::phase_delay(freq, damping) * 2.0;
         // POLL.store(
         //     self.lp_filter_delay_compensation as f32,
@@ -63,6 +82,7 @@ impl SplitWaveguide {
         sample_rate: f64,
         delay_compensation: f64,
     ) {
+        let freq = freq * 2.0 * 0.9929;
         let (mut delay0_time, mut delay1_time) = delay_times(freq, position);
         // Why is it 1.5 and not 1.0? Idk, but it keeps the top pitches in tune without the lp filter
         static FEEDBACK_DELAY_COMPENSATION: f64 = 1.5;
@@ -77,6 +97,16 @@ impl SplitWaveguide {
             delay0_time = (delay0_time + delay1_time).max(0.0);
             delay1_time = 0.0;
             // dbg!(delay0_time, delay0_time);
+        }
+        if delay0_time.is_nan() || delay1_time.is_nan() {
+            dbg!(
+                delay0_time,
+                delay1_time,
+                freq,
+                position,
+                delay_compensation,
+                self.lp_filter_delay_compensation
+            );
         }
         self.delays[0].set_delay_in_frames(delay0_time);
         self.delays[1].set_delay_in_frames(delay1_time);
@@ -94,6 +124,10 @@ impl SplitWaveguide {
         for i in 0..4 {
             let prev_node_index = if i == 0 { 3 } else { i - 1 };
             let cross_delay_feedback = self.last_delay_outputs[prev_node_index];
+            if cross_delay_feedback.is_nan() {
+                dbg!(i, cross_delay_feedback);
+                panic!("NaN in cross");
+            }
             let mut segment_sig = cross_delay_feedback;
             // Put the delayed signal through an LPF and apply the relevant coefficient
             // let delay_input = (cross_delay_feedback).tanh();
@@ -101,7 +135,15 @@ impl SplitWaveguide {
                 // nut/bridge
                 // phase shift 180degrees
                 segment_sig = self.lp_filter[prev_node_index].process_lp(segment_sig);
+                if segment_sig.is_nan() {
+                    dbg!(i, segment_sig);
+                    panic!("NaN in ");
+                }
                 segment_sig *= -1. * feedback;
+                if segment_sig.is_nan() {
+                    dbg!(i, feedback, segment_sig);
+                    panic!("NaN in ");
+                }
             } else {
                 // previous open string segment + excitation signal + previous stopped string segment
                 let previous_open_string_segment = segment_sig * (1.0 - stop_amount);
@@ -114,11 +156,28 @@ impl SplitWaveguide {
 
                 segment_sig =
                     previous_stopped_string_segment + previous_open_string_segment + exciter_input;
+                if segment_sig.is_nan() {
+                    dbg!(
+                        i,
+                        previous_stopped_string_segment,
+                        previous_open_string_segment
+                    );
+                    panic!("NaN in ");
+                }
             }
 
             let delay_input = non_linearity(segment_sig);
+
+            if delay_input.is_nan() {
+                dbg!(i, segment_sig, delay_input);
+                panic!("NaN in ");
+            }
             // let delay_input = cross_delay_feedback;
             let mut delay_output = self.delays[i].process(delay_input);
+            if delay_output.is_nan() {
+                dbg!(i, delay_output, delay_input);
+                panic!("NaN in ");
+            }
             if i == 0 {
                 // After Delay0, tap the signal and apply a DC blocker
                 sig += delay_output;
@@ -188,6 +247,8 @@ impl SplitWaveguide {
         sample_rate: SampleRate,
     ) -> GenState {
         let sample_rate = *sample_rate;
+        let exciter_buf = exciter;
+        let freq_buf = freq;
         for (
             (
                 (
@@ -221,7 +282,12 @@ impl SplitWaveguide {
             }
             let damping_changed =
                 if damping != self.last_damping || self.last_lf_damping != lf_damping {
-                    self.set_damping(damping as f64, lf_damping as f64, sample_rate as f64);
+                    self.set_damping(
+                        damping as f64,
+                        lf_damping as f64,
+                        sample_rate as f64,
+                        stop_amount as f64,
+                    );
                     self.last_damping = damping;
                     self.last_lf_damping = lf_damping;
                     true
@@ -242,10 +308,12 @@ impl SplitWaveguide {
             for i in 0..4 {
                 self.delays[i].feedback = stiffness as f64;
             }
-            let stop_amount = smootherstep(0.0, 1.0, stop_amount as f64);
+            // let stop_amount = smootherstep(0.0, 1.0, stop_amount as f64);
             *output = self.process_sample(exciter as f64, feedback as f64, stop_amount as f64);
             if output.is_nan() {
                 dbg!(
+                    exciter,
+                    exciter_buf,
                     freq,
                     position,
                     damping,
@@ -253,7 +321,7 @@ impl SplitWaveguide {
                     sample_rate,
                     delay_comp,
                     reset_trig,
-                    stiffness
+                    stiffness,
                 );
                 panic!("NaN in waveguide.");
             }

@@ -26,10 +26,11 @@ fn main() -> Result<()> {
         print_error_handler,
     );
 
-    for i in 0..1 {
+    for i in 0..2 {
         std::thread::spawn(move || {
             let mut rng = thread_rng();
-            let mut freq_value = 200. * 2i32.pow(i) as f32 * 7.;
+            let mut freq_value = 100. * 2i32.pow(i) as f32;
+            let freq_value = 200.;
             let freq = bus(1).set(0, freq_value);
             let damping_range = freq * 10.;
             // let exciter = half_sine_impulse().freq(200.).amp(0.2);
@@ -46,20 +47,23 @@ fn main() -> Result<()> {
                 // .feedback(1.005)
                 .feedback(1.007)
                 // .damping(sine().freq(0.25) * damping_range + damping_range + freq)
-                .damping(freq)
+                // .damping(sine().freq(0.1).range(freq * 2., 20000.))
+                // .damping(freq * 9. * (1.0 + i as f32))
+                .damping(freq * 9.)
                 .lf_damping(6.)
                 .position(0.250)
-                .stop_amount(0.0)
-                .stiffness(0.01);
+                .stop_amount(i as f32)
+                .stiffness(0.00);
             let mut position = 0.4;
             let sig = wg * 0.25;
 
             graph_output(0, sig.channels(2));
             // let sine = sine().freq(200.) * 0.1;
             // graph_output(1, sine);
+            std::thread::sleep(std::time::Duration::from_millis(100 * i as u64));
             loop {
                 exciter.restart_trig();
-                std::thread::sleep(std::time::Duration::from_millis(rng.gen_range(100..400)));
+                std::thread::sleep(std::time::Duration::from_millis(400));
                 // freq_value *= 2.0;
                 // if freq_value > 5000. {
                 //     freq_value = 200. * i as f32;

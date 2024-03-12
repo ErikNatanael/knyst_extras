@@ -58,8 +58,7 @@ impl SplitWaveguide {
 
         // We need to compensate more when there's a stop because when the string is stopped the compensation is carried by fewer delay lines
         self.lp_filter_delay_compensation =
-            self.lp_filter[0].cheap_tuning_compensation_lpf() * (-1. - stop_amount * 0.5);
-        // dbg!(self.lp_filter_delay_compensation, self.lp_filter[0]);
+            self.lp_filter[0].cheap_tuning_compensation_lpf() * (-1.0); // - stop_amount * 0.5);
         if self.lp_filter_delay_compensation.is_nan() {
             dbg!(
                 damping,
@@ -78,21 +77,22 @@ impl SplitWaveguide {
     pub fn set_freq_pos(
         &mut self,
         freq: f64,
+        damping: f64,
         position: f64,
         sample_rate: f64,
         delay_compensation: f64,
     ) {
-        let freq = freq * 2.0 * 0.9929;
+        let freq = freq * 2.0;
+
+        // let freq_ratio = (freq / damping).powi(1) * 0.15;
         let (mut delay0_time, mut delay1_time) = delay_times(freq, position);
         // Why is it 1.5 and not 1.0? Idk, but it keeps the top pitches in tune without the lp filter
-        static FEEDBACK_DELAY_COMPENSATION: f64 = 0.5;
+        static FEEDBACK_DELAY_COMPENSATION: f64 = 0.25;
         // Make sure there cannot be a negative time delay
-        delay0_time = delay0_time * sample_rate - FEEDBACK_DELAY_COMPENSATION
-            + delay_compensation
-            + self.lp_filter_delay_compensation;
-        delay1_time = delay1_time * sample_rate - FEEDBACK_DELAY_COMPENSATION
-            + delay_compensation
-            + self.lp_filter_delay_compensation;
+        delay0_time = delay0_time * sample_rate + delay_compensation;
+        // + self.lp_filter_delay_compensation;
+        delay1_time = delay1_time * sample_rate + delay_compensation;
+        // + self.lp_filter_delay_compensation;
         if delay0_time.min(delay1_time) < 0.0 {
             delay0_time = (delay0_time + delay1_time).max(0.0);
             delay1_time = 0.0;
@@ -108,10 +108,10 @@ impl SplitWaveguide {
                 self.lp_filter_delay_compensation
             );
         }
-        self.delays[0].set_delay_in_frames(delay0_time);
+        self.delays[0].set_delay_in_frames(delay0_time + self.lp_filter_delay_compensation - 1.);
         self.delays[1].set_delay_in_frames(delay1_time);
         self.delays[2].set_delay_in_frames(delay1_time);
-        self.delays[3].set_delay_in_frames(delay0_time);
+        self.delays[3].set_delay_in_frames(delay0_time + self.lp_filter_delay_compensation);
         // self.dc_blocker.set_freq_lowpass(30.0, sample_rate);
     }
     pub fn process_sample(
@@ -134,16 +134,17 @@ impl SplitWaveguide {
             if i == 0 || i == 2 {
                 // nut/bridge
                 // phase shift 180degrees
+                segment_sig *= -1. * feedback;
                 segment_sig = self.lp_filter[prev_node_index].process_lp(segment_sig);
                 if segment_sig.is_nan() {
                     dbg!(i, segment_sig);
                     panic!("NaN in ");
                 }
-                segment_sig *= -1. * feedback;
                 if segment_sig.is_nan() {
                     dbg!(i, feedback, segment_sig);
                     panic!("NaN in ");
                 }
+                segment_sig = non_linearity(segment_sig);
             } else {
                 // previous open string segment + excitation signal + previous stopped string segment
                 let previous_open_string_segment = segment_sig * (1.0 - stop_amount);
@@ -166,7 +167,7 @@ impl SplitWaveguide {
                 }
             }
 
-            let delay_input = non_linearity(segment_sig);
+            let delay_input = segment_sig;
 
             if delay_input.is_nan() {
                 dbg!(i, segment_sig, delay_input);
@@ -214,12 +215,13 @@ impl SplitWaveguide {
         }
     }
     fn init(&mut self, sample_rate: SampleRate) {
+        let max_delay_size = 16384; // TODO: set to the next higher power of 2 up from sample_rate/20
         *self = Self {
             delays: [
-                AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
-                AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
-                AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
-                AllpassFeedbackDelay::new(sample_rate.to_usize() / 20),
+                AllpassFeedbackDelay::new(max_delay_size),
+                AllpassFeedbackDelay::new(max_delay_size),
+                AllpassFeedbackDelay::new(max_delay_size),
+                AllpassFeedbackDelay::new(max_delay_size),
             ],
             last_delay_outputs: [0.0; 4],
             last_freq: 0.0,
@@ -248,7 +250,6 @@ impl SplitWaveguide {
     ) -> GenState {
         let sample_rate = *sample_rate;
         let exciter_buf = exciter;
-        let freq_buf = freq;
         for (
             (
                 (
@@ -298,6 +299,7 @@ impl SplitWaveguide {
                 let freq = freq.max(20.);
                 self.set_freq_pos(
                     freq as f64,
+                    damping as f64,
                     position as f64,
                     sample_rate as f64,
                     delay_comp as f64,

@@ -24,8 +24,15 @@ impl Allpass {
         self.coeff = (1.0 - delta) / (1.0 + delta);
     }
     pub fn process(&mut self, input: Sample) -> Sample {
-        let output = self.coeff * (input - self.prev_output) + self.prev_input;
+        // let output = self.coeff * (input - self.prev_output) + self.prev_input;
+        // let output = self.coeff * (input - self.prev_output) + self.prev_input;
+        // let b = input - self.prev_output * self.coeff;
+        // let output = self.prev_output + b * self.coeff;
+        // self.prev_output = b;
+        let mut output = -self.coeff * self.prev_output;
+        output += self.prev_input + (self.coeff * input);
         self.prev_output = output;
+        // self.prev_output = output;
         self.prev_input = input;
         output
     }
@@ -80,7 +87,8 @@ impl AllpassDelayLinInterp {
 #[derive(Clone, Debug)]
 pub struct AllpassDelay {
     buffer: Vec<Sample>,
-    frame: usize,
+    write_frame: usize,
+    read_frame: usize,
     num_frames: usize,
     allpass: Allpass,
 }
@@ -90,24 +98,34 @@ impl AllpassDelay {
         let buffer = vec![0.0; buffer_size];
         Self {
             buffer,
-            frame: 0,
+            write_frame: 0,
+            read_frame: 0,
             num_frames: 1,
             allpass: Allpass::new(),
         }
     }
     /// Read the current frame from the delay and allpass interpolate. Read before `write_and_advance` for the correct sample.
     pub fn read(&mut self) -> Sample {
-        let index = if self.frame < self.num_frames {
-            self.buffer.len() - self.num_frames + self.frame
-        } else {
-            self.frame - self.num_frames
-        };
-        self.allpass.process(self.buffer[index])
+        let v = self.allpass.process(self.buffer[self.read_frame]);
+        self.read_frame += 1;
+        if self.read_frame >= self.buffer.len() {
+            self.read_frame = 0;
+        }
+        v
     }
     pub fn set_delay_in_frames(&mut self, num_frames: f64) {
         self.num_frames = num_frames.floor() as usize;
-        self.allpass
-            .set_delta((num_frames - self.num_frames as f64) as Sample);
+        let mut delta = num_frames - self.num_frames as f64;
+        if delta < 0.5 {
+            delta += 1.0;
+            self.num_frames -= 1;
+        }
+        self.read_frame = if self.write_frame >= self.num_frames {
+            self.write_frame - self.num_frames
+        } else {
+            self.buffer.len() - self.num_frames + self.write_frame
+        };
+        self.allpass.set_delta(delta as Sample);
     }
     pub fn clear(&mut self) {
         for sample in &mut self.buffer {
@@ -129,10 +147,10 @@ impl AllpassDelay {
     }
     /// Write a new value into the delay after incrementing the sample pointer.
     pub fn write_and_advance(&mut self, input: Sample) {
-        self.buffer[self.frame] = input;
-        self.frame += 1;
-        if self.frame >= self.buffer.len() {
-            self.frame = 0;
+        self.buffer[self.write_frame] = input;
+        self.write_frame += 1;
+        if self.write_frame >= self.buffer.len() {
+            self.write_frame = 0;
         }
     }
 }
@@ -265,6 +283,91 @@ impl AllpassFeedbackDelay {
         let delay_write = delayed_sig * self.feedback + input;
         self.allpass_delay.write_and_advance(delay_write);
 
-        delayed_sig - self.feedback * delay_write
+        // delayed_sig - self.feedback * delay_write
+        delayed_sig
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AllpassDelay, AllpassFeedbackDelay};
+
+    #[test]
+    fn allpass_constant_power() {
+        let mut delay = AllpassDelay::new(8192);
+        delay.set_delay_in_frames(2.);
+        for _ in 0..10 {
+            let _out = delay.read();
+            dbg!(_out);
+            delay.write_and_advance(1.0);
+        }
+        for _ in 0..2 {
+            let out = delay.read();
+            delay.write_and_advance(1.0);
+            assert_eq!(out, 1.0);
+        }
+    }
+    #[test]
+    fn allpass_constant_power_fractional_delay() {
+        let mut delay = AllpassDelay::new(8192);
+        delay.set_delay_in_frames(2.1);
+        for _ in 0..10 {
+            let _out = delay.read();
+            dbg!(_out);
+            delay.write_and_advance(1.0);
+        }
+        for _ in 0..2 {
+            let out = delay.read();
+            delay.write_and_advance(1.0);
+            assert!((out - 1.0).abs() < 0.0001);
+        }
+        delay.set_delay_in_frames(2.9);
+        for _ in 0..10 {
+            let _out = delay.read();
+            dbg!(_out);
+            delay.write_and_advance(0.5);
+        }
+        for _ in 0..2 {
+            let out = delay.read();
+            delay.write_and_advance(0.5);
+            assert!((out - 0.5).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn allpass_feedback_constant_power() {
+        let mut delay = AllpassFeedbackDelay::new(8192);
+        delay.set_delay_in_frames(2.);
+        // Because of linear interpolation to the new delay length, we need to run it over 40 times
+        for _ in 0..42 {
+            let _out = delay.process(1.);
+            dbg!(_out);
+        }
+        for _ in 0..2 {
+            let out = delay.process(1.);
+            assert_eq!(out, 1.0);
+        }
+    }
+    #[test]
+    fn allpass_feedback_constant_power_fractional_delay() {
+        let mut delay = AllpassFeedbackDelay::new(8192);
+        delay.set_delay_in_frames(2.1);
+        for _ in 0..40 {
+            let _out = delay.process(1.);
+            dbg!(_out);
+        }
+        for _ in 0..2 {
+            let out = delay.process(1.);
+            assert!((out - 1.0).abs() < 0.0001);
+        }
+        delay.set_delay_in_frames(2.9);
+        for _ in 0..40 {
+            let _out = delay.process(0.5);
+            dbg!(_out);
+        }
+        for _ in 0..2 {
+            let out = delay.process(0.5);
+            assert!((out - 0.5).abs() < 0.0001);
+        }
     }
 }

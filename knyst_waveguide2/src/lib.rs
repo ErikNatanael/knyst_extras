@@ -3,6 +3,7 @@
 //! Instead of lots of custom structs, create a Handle type with methods to set the important parameters, and an init function that returns this handle..
 //!
 
+pub mod bowed_string;
 mod delay;
 pub mod double_buffer_waveguide;
 pub mod parallel_bpf_waveguide;

@@ -116,7 +116,7 @@ impl AllpassDelay {
     pub fn set_delay_in_frames(&mut self, num_frames: f64) {
         self.num_frames = num_frames.floor() as usize;
         let mut delta = num_frames - self.num_frames as f64;
-        if delta < 0.5 {
+        if num_frames > 0.5 && delta < 0.5 {
             delta += 1.0;
             self.num_frames -= 1;
         }

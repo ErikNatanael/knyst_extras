@@ -1,5 +1,7 @@
 use knyst::{gen::filter::one_pole::OnePole, prelude::*, trig::is_trigger};
 
+const BOW_WAVETABLE_SIZE: usize = 4096;
+
 use crate::AllpassFeedbackDelay;
 // This waveguide implementation mirrors the one outlined in Palle Dahlstedt's
 //  "Physical Interactions with Digital Strings - A hybrid approach to a digital keyboard instrument"
@@ -14,7 +16,7 @@ use crate::AllpassFeedbackDelay;
 /// *outputs*
 /// 0. "sig": output signal
 #[derive(Clone, Debug)]
-pub struct SplitWaveguide {
+pub struct BowedWaveguide {
     // one backwards and one forwards delay enables us setting the position of the excitation input signal
     delays: [AllpassFeedbackDelay; 4],
     last_delay_outputs: [f64; 4],
@@ -26,9 +28,10 @@ pub struct SplitWaveguide {
     hp_filter: [OnePole<f64>; 1],
     lp_filter_delay_compensation: f64,
     exciter_peak_follower: f64,
+    bow: Bow,
 }
 
-impl SplitWaveguide {
+impl BowedWaveguide {
     pub fn reset(&mut self) {
         // dbg!("Reset", self.last_delay_outputs);
         for delay in &mut self.delays {
@@ -44,13 +47,7 @@ impl SplitWaveguide {
             *sample = 0.0;
         }
     }
-    pub fn set_damping(
-        &mut self,
-        damping: f64,
-        high_pass_damping: f64,
-        sample_rate: f64,
-        stop_amount: f64,
-    ) {
+    pub fn set_damping(&mut self, damping: f64, high_pass_damping: f64, sample_rate: f64) {
         let damping = damping.clamp(0.0, 20000.);
         for i in 0..4 {
             self.lp_filter[i].set_freq_lowpass(damping, sample_rate);
@@ -119,13 +116,38 @@ impl SplitWaveguide {
         &mut self,
         exciter_input: f64,
         feedback: f64,
-        stop_amount: f64,
+        bow_force: f64,
+        bow_velocity: f64,
     ) -> Sample {
         if exciter_input > self.exciter_peak_follower {
             self.exciter_peak_follower = exciter_input;
         } else {
             self.exciter_peak_follower *= 0.95;
         }
+
+        // Calculate bow sample
+        let bow_sig = if bow_velocity > 0.0 {
+            let velocity = bow_velocity - (self.last_delay_outputs[0] + self.last_delay_outputs[2]);
+            self.bow.slope = 5.0 - (4.0 * bow_force);
+
+            velocity * self.bow.process_sample(velocity)
+        } else {
+            0.0
+        };
+        // let bow_index = ((velocity.abs() + bow_force.abs() * 0.2).clamp(0.0, 1.0)
+        //     * (BOW_WAVETABLE_SIZE - 1) as f64) as usize;
+        // let bow_sig = self.bow_wavetable[bow_index] * bow_force * velocity;
+
+        // let bow_index = velocity.abs();
+        // let bow_sig = if bow_index < bow_force || bow_force >= 1.0 {
+        //     1.0
+        // } else if bow_index > 1.0 {
+        //     0.0
+        // } else {
+        //     (bow_index - bow_force) / (1.0 - bow_force)
+        // };
+
+        let exciter_input = exciter_input + bow_sig;
         let mut sig = 0.0;
         for i in 0..4 {
             let prev_node_index = if i == 0 { 3 } else { i - 1 };
@@ -153,21 +175,17 @@ impl SplitWaveguide {
                 segment_sig = non_linearity(segment_sig);
             } else {
                 // previous open string segment + excitation signal + previous stopped string segment
-                let previous_open_string_segment = segment_sig * (1.0 - stop_amount);
-                let previous_stopped_string_segment =
-                    self.last_delay_outputs[if i == 3 { 0 } else { 2 }];
-                let previous_stopped_string_segment = self.lp_filter[prev_node_index]
-                    .process_lp(previous_stopped_string_segment)
-                    * stop_amount;
+                let previous_open_string_segment = segment_sig;
                 // input amount depends on how stopped the string is
 
-                segment_sig =
-                    previous_stopped_string_segment + previous_open_string_segment + exciter_input;
+                segment_sig = previous_open_string_segment + exciter_input;
                 if segment_sig.is_nan() {
                     dbg!(
                         i,
-                        previous_stopped_string_segment,
-                        previous_open_string_segment
+                        previous_open_string_segment,
+                        exciter_input,
+                        bow_sig,
+                        bow_force
                     );
                     panic!("NaN in ");
                 }
@@ -201,7 +219,7 @@ fn non_linearity(x: f64) -> f64 {
     x - (x.powi(3) / 3.)
 }
 #[impl_gen]
-impl SplitWaveguide {
+impl BowedWaveguide {
     pub fn new() -> Self {
         Self {
             delays: [
@@ -219,6 +237,7 @@ impl SplitWaveguide {
             hp_filter: [OnePole::new()],
             lp_filter_delay_compensation: 0.0,
             exciter_peak_follower: 0.,
+            bow: Bow::new(),
         }
     }
     fn init(&mut self, sample_rate: SampleRate) {
@@ -239,6 +258,7 @@ impl SplitWaveguide {
             hp_filter: [OnePole::new()],
             lp_filter_delay_compensation: 0.0,
             exciter_peak_follower: 0.,
+            bow: Bow::new(),
         };
     }
     fn process(
@@ -251,7 +271,8 @@ impl SplitWaveguide {
         damping: &[Sample],
         lf_damping: &[Sample],
         delay_compensation: &[Sample],
-        stop_amount: &[Sample],
+        bow_force: &[Sample],
+        bow_velocity: &[Sample],
         reset_trig: &[Sample],
         output: &mut [Sample],
         sample_rate: SampleRate,
@@ -263,14 +284,20 @@ impl SplitWaveguide {
                 (
                     (
                         (
-                            (((((&exciter, &freq), &position), &feedback), &stiffness), &damping),
-                            &lf_damping,
+                            (
+                                (
+                                    ((((&exciter, &freq), &position), &feedback), &stiffness),
+                                    &damping,
+                                ),
+                                &lf_damping,
+                            ),
+                            &delay_comp,
                         ),
-                        &delay_comp,
+                        &reset_trig,
                     ),
-                    &reset_trig,
+                    &bow_force,
                 ),
-                &stop_amount,
+                &bow_velocity,
             ),
             output,
         ) in exciter
@@ -283,7 +310,8 @@ impl SplitWaveguide {
             .zip(lf_damping)
             .zip(delay_compensation)
             .zip(reset_trig)
-            .zip(stop_amount)
+            .zip(bow_force)
+            .zip(bow_velocity)
             .zip(output.iter_mut())
         {
             if is_trigger(reset_trig) {
@@ -291,12 +319,7 @@ impl SplitWaveguide {
             }
             let damping_changed =
                 if damping != self.last_damping || self.last_lf_damping != lf_damping {
-                    self.set_damping(
-                        damping as f64,
-                        lf_damping as f64,
-                        sample_rate as f64,
-                        stop_amount as f64,
-                    );
+                    self.set_damping(damping as f64, lf_damping as f64, sample_rate as f64);
                     self.last_damping = damping;
                     self.last_lf_damping = lf_damping;
                     true
@@ -319,7 +342,12 @@ impl SplitWaveguide {
                 self.delays[i].feedback = stiffness as f64;
             }
             // let stop_amount = smootherstep(0.0, 1.0, stop_amount as f64);
-            *output = self.process_sample(exciter as f64, feedback as f64, stop_amount as f64);
+            *output = self.process_sample(
+                exciter as f64,
+                feedback as f64,
+                bow_force as f64,
+                bow_velocity as f64,
+            );
             if output.is_nan() {
                 dbg!(
                     exciter,
@@ -353,4 +381,29 @@ fn smootherstep(edge0: f64, edge1: f64, x: f64) -> f64 {
     let x = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
 
     x * x * x * (x * (6.0 * x - 15.0) + 10.0)
+}
+
+#[derive(Copy, Clone, Debug)]
+struct Bow {
+    slope: f64,
+    offset: f64,
+    min: f64,
+    max: f64,
+}
+impl Bow {
+    pub fn new() -> Self {
+        Self {
+            slope: 0.0,
+            offset: 0.0,
+            min: 0.01,
+            max: 0.98,
+        }
+    }
+    fn process_sample(&mut self, delta_velocity: f64) -> f64 {
+        let sig = delta_velocity + self.offset;
+        let sig = sig * self.slope;
+        let sig = sig.abs() + 0.75;
+        let sig = sig.powi(-4);
+        sig.clamp(self.min, self.max)
+    }
 }

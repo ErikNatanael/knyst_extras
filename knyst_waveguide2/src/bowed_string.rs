@@ -85,7 +85,7 @@ impl BowedWaveguide {
         // let freq_ratio = (freq / damping).powi(1) * 0.15;
         let (mut delay0_time, mut delay1_time) = delay_times(freq, position);
         // Why is it 1.5 and not 1.0? Idk, but it keeps the top pitches in tune without the lp filter
-        static FEEDBACK_DELAY_COMPENSATION: f64 = 0.25;
+        static FEEDBACK_DELAY_COMPENSATION: f64 = 0.125;
         // Make sure there cannot be a negative time delay
         delay0_time = delay0_time * sample_rate + delay_compensation + FEEDBACK_DELAY_COMPENSATION;
         // + self.lp_filter_delay_compensation;

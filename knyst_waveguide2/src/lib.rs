@@ -4,8 +4,10 @@
 //!
 
 pub mod bowed_string;
+pub mod bowed_string_simplified;
 mod delay;
 pub mod double_buffer_waveguide;
+mod internal_filter;
 pub mod parallel_bpf_waveguide;
 pub mod split_string;
 use std::f32::consts::{PI, TAU};
@@ -406,7 +408,7 @@ impl HalfSineWt {
                     *o = 0.0;
                 } else {
                     // TODO: Set a buffer of phase values and request them all from the wavetable all at the same time. Should enable SIMD in the wavetable lookup.
-                    *o = wt.get_linear_interp(self.phase) * amp;
+                    *o = wt.get_linear_interp(self.phase, f) * amp;
                     self.phase.increase(self.step);
                     if self.phase.integer_component() > TABLE_SIZE / 2 {
                         self.finished = true;

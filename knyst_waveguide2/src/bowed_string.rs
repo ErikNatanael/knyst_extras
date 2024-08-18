@@ -1,8 +1,93 @@
 use knyst::{gen::filter::one_pole::OnePole, prelude::*, trig::is_trigger};
 
-const BOW_WAVETABLE_SIZE: usize = 4096;
+pub struct BowedWaveguideOversampled {
+    wg: BowedWaveguide,
+    oversampled_exciter: Vec<Sample>,
+    output_buffer: Vec<Sample>,
+    downsampler: StandardDownsampler2X,
+    /// For exciter upsampling interpolation
+    upsampler_sample: Sample,
+}
 
-use crate::AllpassFeedbackDelay;
+#[impl_gen]
+impl BowedWaveguideOversampled {
+    pub fn new() -> Self {
+        Self {
+            wg: BowedWaveguide::new(),
+            downsampler: StandardDownsampler2X::new(),
+            output_buffer: Vec::new(),
+            oversampled_exciter: Vec::new(),
+            upsampler_sample: 0.,
+        }
+    }
+
+    pub fn init(&mut self, sample_rate: SampleRate, block_size: BlockSize) {
+        self.wg.init(SampleRate(*sample_rate * 2.));
+        self.output_buffer = vec![0.0; *block_size * 2];
+        self.oversampled_exciter = vec![0.0; *block_size * 2];
+    }
+    pub fn process(
+        &mut self,
+        exciter: &[Sample],
+        freq: &[Sample],
+        position: &[Sample],
+        feedback: &[Sample],
+        stiffness: &[Sample],
+        damping: &[Sample],
+        lf_damping: &[Sample],
+        delay_compensation: &[Sample],
+        bow_force: &[Sample],
+        bow_velocity: &[Sample],
+        reset_trig: &[Sample],
+        output: &mut [Sample],
+        sample_rate: SampleRate,
+    ) -> GenState {
+        let over_sample_rate = SampleRate(*sample_rate * 2.);
+        // Oversample exciter signal
+        assert!(exciter.len() * 2 == self.oversampled_exciter.len());
+
+        for (inp, out) in exciter.iter().zip(self.oversampled_exciter.chunks_mut(2)) {
+            out[0] = self.upsampler_sample * 0.5 + *inp * 0.5;
+            out[1] = *inp;
+            self.upsampler_sample = *inp;
+        }
+
+        // NB: This only works because we read the settings at block rate
+        self.wg.process(
+            exciter,
+            freq,
+            position,
+            feedback,
+            stiffness,
+            damping,
+            lf_damping,
+            delay_compensation,
+            bow_force,
+            bow_velocity,
+            reset_trig,
+            &mut self.output_buffer,
+            over_sample_rate,
+        );
+        self.downsampler.process_block(&self.output_buffer, output);
+        GenState::Continue
+    }
+}
+
+/// Settings for the BowedWaveguide
+#[allow(unused)]
+pub struct BowedWaveguideSettings {
+    freq: Sample,
+    position: Sample,
+    feedback: Sample,
+    stiffness: Sample,
+    damping: Sample,
+    lf_damping: Sample,
+    delay_compensation: Sample,
+    bow_force: Sample,
+    bow_velocity: Sample,
+}
+
+use crate::{internal_filter::hiir::StandardDownsampler2X, AllpassFeedbackDelay};
 // This waveguide implementation mirrors the one outlined in Palle Dahlstedt's
 //  "Physical Interactions with Digital Strings - A hybrid approach to a digital keyboard instrument"
 // It allows you to stop the string to some variable degree.
@@ -32,6 +117,7 @@ pub struct BowedWaveguide {
 }
 
 impl BowedWaveguide {
+    #[inline]
     pub fn reset(&mut self) {
         // dbg!("Reset", self.last_delay_outputs);
         for delay in &mut self.delays {
@@ -43,9 +129,10 @@ impl BowedWaveguide {
         for filter in &mut self.hp_filter {
             filter.reset();
         }
-        for sample in self.last_delay_outputs.iter_mut() {
-            *sample = 0.0;
-        }
+        self.last_delay_outputs.fill(0.0);
+        // for sample in self.last_delay_outputs.iter_mut() {
+        //     *sample = 0.0;
+        // }
     }
     pub fn set_damping(&mut self, damping: f64, high_pass_damping: f64, sample_rate: f64) {
         let damping = damping.clamp(0.0, 20000.);
@@ -85,7 +172,7 @@ impl BowedWaveguide {
         // let freq_ratio = (freq / damping).powi(1) * 0.15;
         let (mut delay0_time, mut delay1_time) = delay_times(freq, position);
         // Why is it 1.5 and not 1.0? Idk, but it keeps the top pitches in tune without the lp filter
-        static FEEDBACK_DELAY_COMPENSATION: f64 = 0.125;
+        const FEEDBACK_DELAY_COMPENSATION: f64 = 0.125;
         // Make sure there cannot be a negative time delay
         delay0_time = delay0_time * sample_rate + delay_compensation + FEEDBACK_DELAY_COMPENSATION;
         // + self.lp_filter_delay_compensation;
@@ -96,22 +183,24 @@ impl BowedWaveguide {
             delay1_time = 0.0;
             // dbg!(delay0_time, delay0_time);
         }
-        if delay0_time.is_nan() || delay1_time.is_nan() {
-            dbg!(
-                delay0_time,
-                delay1_time,
-                freq,
-                position,
-                delay_compensation,
-                self.lp_filter_delay_compensation
-            );
-        }
+        // if delay0_time.is_nan() || delay1_time.is_nan() {
+        //     dbg!(
+        //         delay0_time,
+        //         delay1_time,
+        //         freq,
+        //         position,
+        //         delay_compensation,
+        //         self.lp_filter_delay_compensation
+        //     );
+        // }
         self.delays[0].set_delay_in_frames(delay0_time + self.lp_filter_delay_compensation - 1.);
         self.delays[1].set_delay_in_frames(delay1_time);
         self.delays[2].set_delay_in_frames(delay1_time);
-        self.delays[3].set_delay_in_frames(delay0_time + self.lp_filter_delay_compensation);
+        // This magic number keeps the very highest notes kind of in tune
+        self.delays[3].set_delay_in_frames(delay0_time + self.lp_filter_delay_compensation - 0.37);
         // self.dc_blocker.set_freq_lowpass(30.0, sample_rate);
     }
+    #[inline]
     pub fn process_sample(
         &mut self,
         exciter_input: f64,
@@ -147,15 +236,15 @@ impl BowedWaveguide {
         //     (bow_index - bow_force) / (1.0 - bow_force)
         // };
 
-        let exciter_input = exciter_input + bow_sig;
+        let exciter_input = exciter_input + bow_sig as f64;
         let mut sig = 0.0;
         for i in 0..4 {
             let prev_node_index = if i == 0 { 3 } else { i - 1 };
             let cross_delay_feedback = self.last_delay_outputs[prev_node_index];
-            if cross_delay_feedback.is_nan() {
-                dbg!(i, cross_delay_feedback);
-                panic!("NaN in cross");
-            }
+            // if cross_delay_feedback.is_nan() {
+            //     dbg!(i, cross_delay_feedback);
+            //     panic!("NaN in cross");
+            // }
             let mut segment_sig = cross_delay_feedback;
             // Put the delayed signal through an LPF and apply the relevant coefficient
             // let delay_input = (cross_delay_feedback).tanh();
@@ -164,14 +253,10 @@ impl BowedWaveguide {
                 // phase shift 180degrees
                 segment_sig *= -1. * feedback;
                 segment_sig = self.lp_filter[prev_node_index].process_lp(segment_sig);
-                if segment_sig.is_nan() {
-                    dbg!(i, segment_sig);
-                    panic!("NaN in ");
-                }
-                if segment_sig.is_nan() {
-                    dbg!(i, feedback, segment_sig);
-                    panic!("NaN in ");
-                }
+                // if segment_sig.is_nan() {
+                //     dbg!(i, feedback, segment_sig);
+                //     panic!("NaN in ");
+                // }
                 segment_sig = non_linearity(segment_sig);
             } else {
                 // previous open string segment + excitation signal + previous stopped string segment
@@ -179,30 +264,30 @@ impl BowedWaveguide {
                 // input amount depends on how stopped the string is
 
                 segment_sig = previous_open_string_segment + exciter_input;
-                if segment_sig.is_nan() {
-                    dbg!(
-                        i,
-                        previous_open_string_segment,
-                        exciter_input,
-                        bow_sig,
-                        bow_force
-                    );
-                    panic!("NaN in ");
-                }
+                // if segment_sig.is_nan() {
+                //     dbg!(
+                //         i,
+                //         previous_open_string_segment,
+                //         exciter_input,
+                //         bow_sig,
+                //         bow_force
+                //     );
+                //     panic!("NaN in ");
+                // }
             }
 
             let delay_input = segment_sig;
 
-            if delay_input.is_nan() {
-                dbg!(i, segment_sig, delay_input);
-                panic!("NaN in ");
-            }
+            // if delay_input.is_nan() {
+            //     dbg!(i, segment_sig, delay_input);
+            //     panic!("NaN in ");
+            // }
             // let delay_input = cross_delay_feedback;
             let mut delay_output = self.delays[i].process(delay_input);
-            if delay_output.is_nan() {
-                dbg!(i, delay_output, delay_input);
-                panic!("NaN in ");
-            }
+            // if delay_output.is_nan() {
+            //     dbg!(i, delay_output, delay_input);
+            //     panic!("NaN in ");
+            // }
             if i == 0 {
                 // After Delay0, tap the signal and apply a DC blocker
                 sig += delay_output;
@@ -213,20 +298,21 @@ impl BowedWaveguide {
         sig as Sample
     }
 }
+#[inline]
 fn non_linearity(x: f64) -> f64 {
     let x = x.clamp(-2.0, 2.0);
     // (x - (x.powi(3) / 3.)) * 1.5
-    x - (x.powi(3) / 3.)
+    x - (x.powi(3) * 0.33333333)
 }
 #[impl_gen]
 impl BowedWaveguide {
     pub fn new() -> Self {
         Self {
             delays: [
-                AllpassFeedbackDelay::new(192000 / 20),
-                AllpassFeedbackDelay::new(192000 / 20),
-                AllpassFeedbackDelay::new(192000 / 20),
-                AllpassFeedbackDelay::new(192000 / 20),
+                AllpassFeedbackDelay::new(0),
+                AllpassFeedbackDelay::new(0),
+                AllpassFeedbackDelay::new(0),
+                AllpassFeedbackDelay::new(0),
             ],
             last_delay_outputs: [0.0; 4],
             last_freq: 0.0,
@@ -240,7 +326,7 @@ impl BowedWaveguide {
             bow: Bow::new(),
         }
     }
-    fn init(&mut self, sample_rate: SampleRate) {
+    pub fn init(&mut self, sample_rate: SampleRate) {
         let max_delay_size = 16384; // TODO: set to the next higher power of 2 up from sample_rate/20
         *self = Self {
             delays: [
@@ -261,7 +347,7 @@ impl BowedWaveguide {
             bow: Bow::new(),
         };
     }
-    fn process(
+    pub fn process(
         &mut self,
         exciter: &[Sample],
         freq: &[Sample],
@@ -277,70 +363,46 @@ impl BowedWaveguide {
         output: &mut [Sample],
         sample_rate: SampleRate,
     ) -> GenState {
-        let sample_rate = *sample_rate;
-        let exciter_buf = exciter;
-        for (
-            (
-                (
-                    (
-                        (
-                            (
-                                (
-                                    ((((&exciter, &freq), &position), &feedback), &stiffness),
-                                    &damping,
-                                ),
-                                &lf_damping,
-                            ),
-                            &delay_comp,
-                        ),
-                        &reset_trig,
-                    ),
-                    &bow_force,
-                ),
-                &bow_velocity,
-            ),
-            output,
-        ) in exciter
-            .iter()
-            .zip(freq)
-            .zip(position)
-            .zip(feedback)
-            .zip(stiffness)
-            .zip(damping)
-            .zip(lf_damping)
-            .zip(delay_compensation)
-            .zip(reset_trig)
-            .zip(bow_force)
-            .zip(bow_velocity)
-            .zip(output.iter_mut())
+        let reset_trig = reset_trig[0];
+        let damping = damping[0];
+        let lf_damping = lf_damping[0];
+        let freq = freq[0];
+        let position = position[0];
+        let sample_rate = sample_rate.to_f64();
+        let delay_comp = delay_compensation[0];
+        let stiffness = stiffness[0];
+        let bow_force = bow_force[0];
+        let bow_velocity = bow_velocity[0];
+        let damping_changed = if damping != self.last_damping || self.last_lf_damping != lf_damping
         {
-            if is_trigger(reset_trig) {
-                self.reset();
-            }
-            let damping_changed =
-                if damping != self.last_damping || self.last_lf_damping != lf_damping {
-                    self.set_damping(damping as f64, lf_damping as f64, sample_rate as f64);
-                    self.last_damping = damping;
-                    self.last_lf_damping = lf_damping;
-                    true
-                } else {
-                    false
-                };
-            if damping_changed || freq != self.last_freq || position != self.last_position {
-                let freq = freq.max(20.);
-                self.set_freq_pos(
-                    freq as f64,
-                    damping as f64,
-                    position as f64,
-                    sample_rate as f64,
-                    delay_comp as f64,
-                );
-                self.last_freq = freq;
-                self.last_position = position;
-            }
-            for i in 0..4 {
-                self.delays[i].feedback = stiffness as f64;
-            }
+            self.set_damping(damping as f64, lf_damping as f64, sample_rate as f64);
+            self.last_damping = damping;
+            self.last_lf_damping = lf_damping;
+            true
+        } else {
+            false
+        };
+        if damping_changed || freq != self.last_freq || position != self.last_position {
+            let freq = freq.max(20.);
+            self.set_freq_pos(
+                freq as f64,
+                damping as f64,
+                position as f64,
+                sample_rate as f64,
+                delay_comp as f64,
+            );
+            self.last_freq = freq;
+            self.last_position = position;
+        }
+        for i in 0..4 {
+            self.delays[i].feedback = stiffness as f64;
+        }
+        // Should come after setting frequency because of how the delay buffer is cleared
+        if is_trigger(reset_trig) {
+            self.reset();
+        }
+        // let exciter_buf = exciter;
+        for ((&exciter, &feedback), output) in exciter.iter().zip(feedback).zip(output.iter_mut()) {
             // let stop_amount = smootherstep(0.0, 1.0, stop_amount as f64);
             *output = self.process_sample(
                 exciter as f64,
@@ -348,21 +410,21 @@ impl BowedWaveguide {
                 bow_force as f64,
                 bow_velocity as f64,
             );
-            if output.is_nan() {
-                dbg!(
-                    exciter,
-                    exciter_buf,
-                    freq,
-                    position,
-                    damping,
-                    lf_damping,
-                    sample_rate,
-                    delay_comp,
-                    reset_trig,
-                    stiffness,
-                );
-                panic!("NaN in waveguide.");
-            }
+            // if output.is_nan() {
+            //     dbg!(
+            //         exciter,
+            //         exciter_buf,
+            //         freq,
+            //         position,
+            //         damping,
+            //         lf_damping,
+            //         sample_rate,
+            //         delay_comp,
+            //         reset_trig,
+            //         stiffness,
+            //     );
+            //     panic!("NaN in waveguide.");
+            // }
         }
         // dbg!(&output_buf);
         GenState::Continue
@@ -399,11 +461,15 @@ impl Bow {
             max: 0.98,
         }
     }
+    #[inline]
     fn process_sample(&mut self, delta_velocity: f64) -> f64 {
         let sig = delta_velocity + self.offset;
         let sig = sig * self.slope;
         let sig = sig.abs() + 0.75;
         let sig = sig.powi(-4);
+        // let sig = (sig * sig * sig * sig).recip(); // powi(-4)
+        // let sig = fastapprox::fast::pow(sig, -4.);
         sig.clamp(self.min, self.max)
+        // sig
     }
 }

@@ -16,10 +16,12 @@ impl Allpass {
         }
     }
     /// Reset any state to 0
+    #[inline]
     pub fn clear(&mut self) {
         self.prev_input = 0.0;
         self.prev_output = 0.0;
     }
+    #[inline]
     pub fn set_delta(&mut self, delta: Sample) {
         self.coeff = (1.0 - delta) / (1.0 + delta);
     }
@@ -42,9 +44,9 @@ impl Allpass {
 #[derive(Clone, Debug)]
 pub struct AllpassDelayLinInterp {
     delay: AllpassDelay,
-    target_delay_length_in_frames: f64,
-    current_delay_length_in_frames: f64,
-    delay_length_step_size: f64,
+    target_delay_length_in_frames: Sample,
+    current_delay_length_in_frames: Sample,
+    delay_length_step_size: Sample,
     delay_length_steps_left: usize,
 }
 impl AllpassDelayLinInterp {
@@ -57,19 +59,22 @@ impl AllpassDelayLinInterp {
             current_delay_length_in_frames: 1.,
         }
     }
+    #[inline]
     pub fn read(&mut self) -> Sample {
         self.delay.read()
     }
-    pub fn set_delay_in_frames(&mut self, num_frames: f64) {
+    #[inline]
+    pub fn set_delay_in_frames(&mut self, num_frames: Sample) {
         const NUM_FRAMES_TO_INTERPOLATE: usize = 40;
         self.delay_length_steps_left = NUM_FRAMES_TO_INTERPOLATE - 1;
         self.target_delay_length_in_frames = num_frames;
-        self.delay_length_step_size =
-            (num_frames - self.current_delay_length_in_frames) / NUM_FRAMES_TO_INTERPOLATE as f64;
+        self.delay_length_step_size = (num_frames - self.current_delay_length_in_frames)
+            / NUM_FRAMES_TO_INTERPOLATE as Sample;
         self.current_delay_length_in_frames += self.delay_length_step_size;
         self.delay
             .set_delay_in_frames(self.current_delay_length_in_frames);
     }
+    #[inline]
     pub fn write_and_advance(&mut self, input: Sample) {
         self.delay.write_and_advance(input);
         if self.delay_length_steps_left > 0 {
@@ -79,6 +84,7 @@ impl AllpassDelayLinInterp {
             self.delay_length_steps_left -= 1;
         }
     }
+    #[inline]
     pub fn clear(&mut self) {
         self.delay.clear();
     }
@@ -90,6 +96,7 @@ pub struct AllpassDelay {
     write_frame: usize,
     read_frame: usize,
     num_frames: usize,
+    clear_nr_of_samples_left: usize,
     allpass: Allpass,
 }
 
@@ -102,20 +109,29 @@ impl AllpassDelay {
             read_frame: 0,
             num_frames: 1,
             allpass: Allpass::new(),
+            clear_nr_of_samples_left: 0,
         }
     }
     /// Read the current frame from the delay and allpass interpolate. Read before `write_and_advance` for the correct sample.
+    #[inline]
     pub fn read(&mut self) -> Sample {
-        let v = self.allpass.process(self.buffer[self.read_frame]);
-        self.read_frame += 1;
-        if self.read_frame >= self.buffer.len() {
-            self.read_frame = 0;
+        if self.clear_nr_of_samples_left > 0 {
+            // Instead of clearing the whole buffer, we amortise the cost and clear only what we need.
+            // Samples between the read pointer and the write pointer will be 0 when cleared.
+            self.clear_nr_of_samples_left -= 1;
+            self.read_frame = (self.read_frame + 1) % self.buffer.len();
+            0.0
+        } else {
+            let v = self.allpass.process(self.buffer[self.read_frame]);
+            self.read_frame = (self.read_frame + 1) % self.buffer.len();
+            v
         }
-        v
     }
-    pub fn set_delay_in_frames(&mut self, num_frames: f64) {
-        self.num_frames = num_frames.floor() as usize;
-        let mut delta = num_frames - self.num_frames as f64;
+    #[inline]
+    pub fn set_delay_in_frames(&mut self, num_frames: Sample) {
+        let num_frames_float = num_frames.floor();
+        self.num_frames = num_frames_float as usize;
+        let mut delta = num_frames - num_frames_float;
         if num_frames > 0.5 && delta < 0.5 {
             delta += 1.0;
             self.num_frames -= 1;
@@ -127,14 +143,21 @@ impl AllpassDelay {
         };
         self.allpass.set_delta(delta as Sample);
     }
+    #[inline]
+    /// Call after set_delay_in_frames. Only data that won't be overwritten before read is cleared.
     pub fn clear(&mut self) {
-        for sample in &mut self.buffer {
-            *sample = 0.0;
-        }
+        // We only need to clear memory from now until where the write pointer overwrites memory, which is self.num_frames into the future.
+        // Samples between the read pointer and the write pointer will be 0 when cleared.
+        // Zeroing memory is surprisingly expensive.
+        self.clear_nr_of_samples_left = self.num_frames;
+        // self.buffer.fill(0.0);
+        // for sample in &mut self.buffer {
+        //     *sample = 0.0;
+        // }
         self.allpass.clear();
     }
     /// Reset the delay with a new length in frames
-    pub fn set_delay_in_frames_and_clear(&mut self, num_frames: f64) {
+    pub fn set_delay_in_frames_and_clear(&mut self, num_frames: Sample) {
         for sample in &mut self.buffer {
             *sample = 0.0;
         }
@@ -146,12 +169,10 @@ impl AllpassDelay {
         // );
     }
     /// Write a new value into the delay after incrementing the sample pointer.
+    #[inline]
     pub fn write_and_advance(&mut self, input: Sample) {
         self.buffer[self.write_frame] = input;
-        self.write_frame += 1;
-        if self.write_frame >= self.buffer.len() {
-            self.write_frame = 0;
-        }
+        self.write_frame = (self.write_frame + 1) % self.buffer.len();
     }
 }
 
@@ -261,10 +282,12 @@ impl AllpassFeedbackDelay {
         };
         s
     }
-    pub fn set_delay_in_frames(&mut self, delay_length: f64) {
+    #[inline]
+    pub fn set_delay_in_frames(&mut self, delay_length: Sample) {
         self.allpass_delay.set_delay_in_frames(delay_length);
     }
     /// Clear any values in the delay
+    #[inline]
     pub fn clear(&mut self) {
         self.allpass_delay.clear();
     }
@@ -274,12 +297,13 @@ impl AllpassFeedbackDelay {
     //     let delay_samples = self.delay_time * self.sample_rate;
     //     self.allpass_delay.set_num_frames(delay_samples as f64);
     // }
+    #[inline]
     pub fn process(&mut self, input: Sample) -> Sample {
         let delayed_sig = self.allpass_delay.read();
-        if delayed_sig.is_nan() {
-            dbg!(&self);
-            panic!("nan in allpass");
-        }
+        // if delayed_sig.is_nan() {
+        //     dbg!(&self);
+        //     panic!("nan in allpass");
+        // }
         let delay_write = delayed_sig * self.feedback + input;
         self.allpass_delay.write_and_advance(delay_write);
 

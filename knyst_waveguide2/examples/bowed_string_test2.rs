@@ -114,37 +114,38 @@ fn main() -> Result<()> {
         // std::thread::sleep(std::time::Duration::from_millis(200 * 32));
     }
 
-    let mut rng = thread_rng();
-    // let exciter = half_sine_impulse().freq(200.).amp(0.2);
-    let exciter = half_sine_wt().freq(120.).amp(0.4);
-    let exciter_input = one_pole_lpf().sig(exciter).cutoff_freq(5600.);
-    // let bpf_mix = (sine().freq(0.5)* 0.35 + 0.71).powf(2.0);
-    // let exciter_input = one_pole_hpf()
-    // .sig(one_pole_lpf().sig(white_noise() * 0.1).cutoff_freq(100.))
-    // .cutoff_freq(40.);
-    let mut harmonic = 2;
-    let wg = split_waveguide()
-        .freq(50.)
-        .exciter(exciter_input)
-        // .feedback(1.005)
-        .feedback(1.007)
-        .damping(1000.)
-        .lf_damping(6.)
-        .position(1.0 / harmonic as f32)
-        .stop_amount(0.0)
-        .stiffness(0.01);
-    let mut position = 0.4;
-    let sig = wg * 0.25;
+    // let mut rng = thread_rng();
+    // // let exciter = half_sine_impulse().freq(200.).amp(0.2);
+    // let exciter = half_sine_wt().freq(120.).amp(0.4);
+    // let exciter_input = one_pole_lpf().sig(exciter).cutoff_freq(5600.);
+    // // let bpf_mix = (sine().freq(0.5)* 0.35 + 0.71).powf(2.0);
+    // // let exciter_input = one_pole_hpf()
+    // // .sig(one_pole_lpf().sig(white_noise() * 0.1).cutoff_freq(100.))
+    // // .cutoff_freq(40.);
+    // let mut harmonic = 2;
+    // let wg = split_waveguide()
+    //     .freq(50.)
+    //     .exciter(exciter_input)
+    //     // .feedback(1.005)
+    //     .feedback(1.007)
+    //     .damping(1000.)
+    //     .lf_damping(6.)
+    //     .position(1.0 / harmonic as f32)
+    //     .stop_amount(0.0)
+    //     .stiffness(0.01);
+    // let mut position = 0.4;
+    // let sig = wg * 0.25;
 
-    graph_output(0, sig.repeat_outputs(1));
-    loop {
-        exciter.amp(0.5);
-        exciter.restart_trig();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        exciter.amp(0.2);
-        exciter.restart_trig();
-        std::thread::sleep(std::time::Duration::from_millis(400));
-    }
+    // graph_output(0, sig.repeat_outputs(1));
+    // loop {
+    //     exciter.amp(0.5);
+    //     exciter.restart_trig();
+    //     std::thread::sleep(std::time::Duration::from_millis(200));
+    //     exciter.amp(0.2);
+    //     exciter.restart_trig();
+    //     std::thread::sleep(std::time::Duration::from_millis(400));
+    // }
+    loop {}
 
     Ok(())
 }

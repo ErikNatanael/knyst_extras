@@ -12,6 +12,8 @@ knyst = { path = "../../knyst/knyst/", default-features = false }
 dasp = { version = "0.11.0", features = ["signal"] }
 num = "0.4.0"
 biquad = "0.4.2"
+# Fast approximation of common float math. Probably under BSD-3.
+fastapprox = "0.3"
 
 [dev-dependencies]
 color-eyre = "0.6.2"
@@ -22,3 +24,13 @@ anyhow = "^1.0"
 # knyst = { git = "https://github.com/ErikNatanael/knyst.git", features = [
 #   "jack",
 # ] }
+criterion = "0.5"
+
+[[bench]]
+name = "criterion"
+harness = false
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"

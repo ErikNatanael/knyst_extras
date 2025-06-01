@@ -236,7 +236,7 @@ impl BowedWaveguide {
         //     (bow_index - bow_force) / (1.0 - bow_force)
         // };
 
-        let exciter_input = exciter_input + bow_sig as f64;
+        let exciter_input = exciter_input + bow_sig + 1e-20;
         let mut sig = 0.0;
         for i in 0..4 {
             let prev_node_index = if i == 0 { 3 } else { i - 1 };
@@ -251,8 +251,18 @@ impl BowedWaveguide {
             if i == 0 || i == 2 {
                 // nut/bridge
                 // phase shift 180degrees
-                segment_sig *= -1. * feedback;
-                segment_sig = self.lp_filter[prev_node_index].process_lp(segment_sig);
+                #[cfg(feature = "no_denormals")]
+                unsafe {
+                    no_denormals::no_denormals(|| {
+                        segment_sig *= -1. * feedback;
+                        segment_sig = self.lp_filter[prev_node_index].process_lp(segment_sig);
+                    })
+                }
+                #[cfg(not(feature = "no_denormals"))]
+                {
+                    segment_sig *= -1. * feedback;
+                    segment_sig = self.lp_filter[prev_node_index].process_lp(segment_sig);
+                }
                 // if segment_sig.is_nan() {
                 //     dbg!(i, feedback, segment_sig);
                 //     panic!("NaN in ");
@@ -291,7 +301,7 @@ impl BowedWaveguide {
             if i == 0 {
                 // After Delay0, tap the signal and apply a DC blocker
                 sig += delay_output;
-                delay_output = self.hp_filter[0].process_hp(delay_output);
+                delay_output = self.hp_filter[0].process_hp(delay_output) + 1e-20;
             }
             self.last_delay_outputs[i] = delay_output;
         }
